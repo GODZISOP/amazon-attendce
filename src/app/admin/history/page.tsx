@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { AdminGuard } from '@/components/AdminGuard';
 import { AdminHeader } from '@/components/AdminHeader';
 import { AdminBottomNav } from '@/components/AdminBottomNav';
@@ -444,6 +445,13 @@ export default function AdminHistoryPage() {
                         {selectedDate ? formatFullDayDate(selectedDate) : ''}
                       </h2>
                     </div>
+                    <Link
+                      href={`/admin/attendance?date=${selectedDate}`}
+                      className="inline-flex items-center gap-1 text-xs font-bold text-slate-900 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl transition-colors cursor-pointer print:hidden"
+                    >
+                      <Edit2 className="w-3 h-3" />
+                      Edit Entire Sheet
+                    </Link>
                   </div>
 
                   {/* Summary Bar inside banner */}

@@ -88,7 +88,15 @@ export default function AdminAttendancePage() {
   const [, startTransition] = useTransition();
 
   useEffect(() => {
-    setSelectedDate(getTodayDateString());
+    let initialDate = getTodayDateString();
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const urlDate = params.get('date');
+      if (urlDate) {
+        initialDate = urlDate;
+      }
+    }
+    setSelectedDate(initialDate);
     setIsOffline(!navigator.onLine);
     setPendingSyncCount(getPendingOfflineCount());
 
