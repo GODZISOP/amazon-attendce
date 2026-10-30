@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://prescxutdeljzowbnvlt.supabase.co';
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_Jt6yoNCCqAKzyEMGGSwudQ_g2139fk2';
 
@@ -15,23 +18,29 @@ export async function GET(req: NextRequest) {
     const date = searchParams.get('date');
 
     if (!date) {
-      // Return distinct dates of all saved attendance sheets (latest on top)
       const { data, error } = await supabaseServer
         .from('attendance')
         .select('attendance_date, status')
         .order('attendance_date', { ascending: false });
 
       if (error) throw error;
-      return NextResponse.json({ success: true, records: data || [] });
+      return NextResponse.json(
+        { success: true, records: data || [] },
+        { headers: { 'Cache-Control': 'no-store, max-age=0' } }
+      );
     }
 
     const { data, error } = await supabaseServer
       .from('attendance')
       .select('*')
-      .eq('attendance_date', date);
+      .eq('attendance_date', date.trim());
 
     if (error) throw error;
-    return NextResponse.json({ success: true, attendance: data || [] });
+
+    return NextResponse.json(
+      { success: true, attendance: data || [] },
+      { headers: { 'Cache-Control': 'no-store, max-age=0' } }
+    );
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to fetch attendance';
     return NextResponse.json({ success: false, error: msg }, { status: 500 });
@@ -42,7 +51,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const date = body.date;
+    const date = (body.date || '').trim();
     const records: Array<{
       student_id: string;
       status: string;
@@ -54,7 +63,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Date and records required' }, { status: 400 });
     }
 
-    // Process each record with check-then-update or insert to guarantee it saves!
     for (const item of records) {
       const payload = {
         student_id: item.student_id,
@@ -73,7 +81,6 @@ export async function POST(req: NextRequest) {
         .maybeSingle();
 
       if (existing?.id) {
-        // Update existing record
         await supabaseServer
           .from('attendance')
           .update({
@@ -84,12 +91,14 @@ export async function POST(req: NextRequest) {
           })
           .eq('id', existing.id);
       } else {
-        // Insert new record
         await supabaseServer.from('attendance').insert([payload]);
       }
     }
 
-    return NextResponse.json({ success: true, message: 'Attendance saved successfully' });
+    return NextResponse.json(
+      { success: true, message: 'Attendance saved successfully' },
+      { headers: { 'Cache-Control': 'no-store, max-age=0' } }
+    );
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to save attendance';
     return NextResponse.json({ success: false, error: msg }, { status: 500 });

@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://prescxutdeljzowbnvlt.supabase.co';
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_Jt6yoNCCqAKzyEMGGSwudQ_g2139fk2';
 
@@ -19,7 +22,10 @@ export async function GET() {
     if (error) {
       return NextResponse.json({ success: false, error: error.message }, { status: 500 });
     }
-    return NextResponse.json({ success: true, students: data || [] });
+    return NextResponse.json(
+      { success: true, students: data || [] },
+      { headers: { 'Cache-Control': 'no-store, max-age=0' } }
+    );
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to fetch students';
     return NextResponse.json({ success: false, error: msg }, { status: 500 });
@@ -102,7 +108,7 @@ export async function PUT(req: NextRequest) {
   }
 }
 
-// DELETE /api/students?id=... (cleanly deletes attendance records first, then the student)
+// DELETE /api/students?id=...
 export async function DELETE(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -112,10 +118,7 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Student ID is required.' }, { status: 400 });
     }
 
-    // 1. Delete associated attendance records first to avoid foreign key errors
     await supabaseServer.from('attendance').delete().eq('student_id', id);
-
-    // 2. Delete the student
     const { error } = await supabaseServer.from('students').delete().eq('id', id);
 
     if (error) {

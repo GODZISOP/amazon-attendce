@@ -38,6 +38,8 @@ import {
   Clock,
   WifiOff,
   CloudUpload,
+  Edit3,
+  X,
 } from 'lucide-react';
 
 interface AttendanceDraft {
@@ -76,6 +78,12 @@ export default function AdminAttendancePage() {
   const [isOffline, setIsOffline] = useState(false);
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
 
+  // Quick edit modal for direct editing from the sheet
+  const [editingRow, setEditingRow] = useState<AttendanceDraft | null>(null);
+  const [editStatus, setEditStatus] = useState<AttendanceStatus>('Present');
+  const [editTime, setEditTime] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+
   const [activeTab, setActiveTab] = useState<'entry' | 'sheet'>('entry');
   const [, startTransition] = useTransition();
 
@@ -89,14 +97,14 @@ export default function AdminAttendancePage() {
       showToast('Internet connected! Syncing offline records...', 'success');
       const res = await syncOfflineRecords();
       if (res.syncedCount > 0) {
-        showToast(`Synced ${res.syncedCount} offline sheet(s) to database!`, 'success');
+        showToast(`Synced ${res.syncedCount} offline sheet(s) to cloud!`, 'success');
       }
       setPendingSyncCount(getPendingOfflineCount());
     };
 
     const handleOffline = () => {
       setIsOffline(true);
-      showToast('Offline Mode: Attendance will save locally to phone.', 'error');
+      showToast('Offline Mode: Saving locally to phone.', 'error');
     };
 
     window.addEventListener('online', handleOnline);
@@ -115,25 +123,23 @@ export default function AdminAttendancePage() {
     }, 4000);
   };
 
-  // Load employees and attendance (Online OR Offline from cache)
+  // Load employees and attendance for the chosen date (Fresh fetch without cache)
   const loadData = async (date: string) => {
     if (!date) return;
     setLoading(true);
     try {
       let empList: Student[] = [];
 
-      // Try fetching employees online
       try {
-        const empRes = await fetch('/api/students');
+        const empRes = await fetch(`/api/students?t=${Date.now()}`, { cache: 'no-store' });
         const empData = await empRes.json();
         if (empData.success && empData.students?.length > 0) {
           empList = empData.students;
-          cacheEmployeesLocally(empList); // Cache for offline use!
+          cacheEmployeesLocally(empList);
         } else {
           empList = getCachedEmployeesLocally();
         }
       } catch {
-        // Offline fallback for employees
         empList = getCachedEmployeesLocally();
       }
 
@@ -142,15 +148,13 @@ export default function AdminAttendancePage() {
       let attendanceList: any[] = [];
       let hasSaved = false;
 
-      // Try fetching online attendance for this date
       try {
-        const attRes = await fetch(`/api/attendance?date=${date}`);
+        const attRes = await fetch(`/api/attendance?date=${date}&t=${Date.now()}`, { cache: 'no-store' });
         const attData = await attRes.json();
         if (attData.success && attData.attendance) {
           attendanceList = attData.attendance;
         }
       } catch {
-        // Fallback to local offline saved records
         const offlineRecords = getOfflineAttendanceForDate(date);
         if (offlineRecords) {
           attendanceList = offlineRecords;
@@ -159,7 +163,6 @@ export default function AdminAttendancePage() {
 
       const attendanceMap = new Map(attendanceList.map((a: any) => [a.student_id, a]));
 
-      // Build drafts for every employee
       const initialDrafts: Record<string, AttendanceDraft> = {};
       empList.forEach((emp) => {
         const existing: any = attendanceMap.get(emp.id);
@@ -189,6 +192,7 @@ export default function AdminAttendancePage() {
 
       setDrafts(initialDrafts);
 
+      // If records already saved for this date, open sheet view; otherwise entry view
       if (hasSaved) {
         setActiveTab('sheet');
       } else {
@@ -196,9 +200,6 @@ export default function AdminAttendancePage() {
       }
     } catch (err) {
       console.error('Failed to load data:', err);
-      // Even if everything fails, load from cached employees
-      const cached = getCachedEmployeesLocally();
-      setEmployees(cached);
     } finally {
       setLoading(false);
     }
@@ -210,7 +211,7 @@ export default function AdminAttendancePage() {
     }
   }, [selectedDate]);
 
-  // Handle status selection
+  // Handle status selection in entry view
   const handleStatusChange = (empId: string, status: AttendanceStatus) => {
     setDrafts((prev) => {
       const current = prev[empId];
@@ -265,7 +266,7 @@ export default function AdminAttendancePage() {
     showToast('All marked Present with PM timing', 'success');
   };
 
-  // SAVE ATTENDANCE (BULLETPROOF ONLINE + OFFLINE)
+  // SAVE ATTENDANCE (UPDATES OLD RECORD FOR THE SELECTED DATE)
   const handleSaveAttendance = async () => {
     if (!selectedDate) return;
     setSavingAttendance(true);
@@ -282,7 +283,6 @@ export default function AdminAttendancePage() {
       return;
     }
 
-    // If completely offline or network down: save directly into phone's LocalStorage!
     if (!navigator.onLine) {
       saveAttendanceOffline(selectedDate, records);
       setPendingSyncCount(getPendingOfflineCount());
@@ -312,10 +312,7 @@ export default function AdminAttendancePage() {
       });
 
       const json = await res.json();
-
-      if (!res.ok || !json.success) {
-        throw new Error(json.error || 'Server error');
-      }
+      if (!res.ok || !json.success) throw new Error(json.error || 'Server error');
 
       startTransition(() => {
         setDrafts((prev) => {
@@ -330,10 +327,8 @@ export default function AdminAttendancePage() {
 
       showToast('Attendance Saved! Sheet updated.', 'success');
     } catch {
-      // Network broke mid-way: save to offline queue without losing any data!
       saveAttendanceOffline(selectedDate, records);
       setPendingSyncCount(getPendingOfflineCount());
-
       startTransition(() => {
         setDrafts((prev) => {
           const updated: Record<string, AttendanceDraft> = {};
@@ -344,26 +339,64 @@ export default function AdminAttendancePage() {
         });
         setActiveTab('sheet');
       });
-
-      showToast('Net was slow: Saved Offline on your phone safely!', 'success');
+      showToast('Saved Offline safely on your phone!', 'success');
     } finally {
       setSavingAttendance(false);
     }
   };
 
-  // Manual Trigger to sync pending offline sheets
-  const handleManualSync = async () => {
-    if (!navigator.onLine) {
-      showToast('Internet is currently not connected.', 'error');
-      return;
+  // Direct single row edit from Attendance Sheet
+  const openDirectEdit = (draft: AttendanceDraft) => {
+    setEditingRow(draft);
+    setEditStatus(draft.status);
+    setEditTime(draft.check_in_time);
+  };
+
+  const handleSaveDirectEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingRow || !selectedDate) return;
+
+    setSavingEdit(true);
+    const checkInFull = editTime.trim() ? `${editTime.trim()} PM` : null;
+
+    try {
+      const res = await fetch('/api/attendance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          date: selectedDate,
+          records: [
+            {
+              student_id: editingRow.student_id,
+              status: editStatus,
+              check_in: checkInFull,
+              notes: editingRow.notes || null,
+            },
+          ],
+        }),
+      });
+
+      const json = await res.json();
+      if (!res.ok || !json.success) throw new Error(json.error);
+
+      // Update in local state
+      setDrafts((prev) => ({
+        ...prev,
+        [editingRow.student_id]: {
+          ...prev[editingRow.student_id],
+          status: editStatus,
+          check_in_time: editTime.trim(),
+          saved: true,
+        },
+      }));
+
+      setEditingRow(null);
+      showToast('Timing updated successfully!', 'success');
+    } catch (err: any) {
+      showToast(err.message || 'Could not update timing', 'error');
+    } finally {
+      setSavingEdit(false);
     }
-    const res = await syncOfflineRecords();
-    if (res.syncedCount > 0) {
-      showToast(`Successfully synced ${res.syncedCount} sheet(s) to cloud!`, 'success');
-    } else {
-      showToast('All sheets are already synced!', 'success');
-    }
-    setPendingSyncCount(getPendingOfflineCount());
   };
 
   const filteredEmployees = employees.filter(
@@ -436,7 +469,7 @@ export default function AdminAttendancePage() {
   return (
     <AdminGuard>
       <div className="min-h-screen bg-slate-50 flex flex-col max-w-md mx-auto w-full pb-36 print:pb-0 print:bg-white print:max-w-none">
-        {/* Offline / Pending Sync Banner */}
+        {/* Offline Banner */}
         {isOffline && (
           <div className="bg-amber-500 text-white px-4 py-2 text-xs font-bold flex items-center justify-between shadow-xs print:hidden">
             <div className="flex items-center gap-1.5">
@@ -453,7 +486,11 @@ export default function AdminAttendancePage() {
               <span>{pendingSyncCount} sheet(s) waiting to sync</span>
             </div>
             <button
-              onClick={handleManualSync}
+              onClick={async () => {
+                const res = await syncOfflineRecords();
+                if (res.syncedCount > 0) showToast(`Synced ${res.syncedCount} sheet(s)!`, 'success');
+                setPendingSyncCount(getPendingOfflineCount());
+              }}
               className="bg-white text-emerald-800 px-2.5 py-0.5 rounded-md text-[11px] font-black cursor-pointer"
             >
               Sync Now
@@ -499,12 +536,12 @@ export default function AdminAttendancePage() {
         )}
 
         <main className="p-4 space-y-4">
-          {/* Date Selector Bar */}
-          <div className="bg-white border border-slate-200 rounded-2xl p-3 shadow-2xs flex items-center justify-between print:hidden">
+          {/* DATE SELECTOR BAR (ANY DATE CAN BE SELECTED AND EDITED) */}
+          <div className="bg-white border-2 border-emerald-500/40 rounded-2xl p-3 shadow-2xs flex items-center justify-between print:hidden">
             <div className="flex items-center gap-2">
               <Calendar className="w-4 h-4 text-emerald-600" />
-              <label htmlFor="att-date-input" className="text-xs font-bold text-slate-700 uppercase">
-                Date:
+              <label htmlFor="att-date-input" className="text-xs font-black text-slate-800 uppercase">
+                Select Date:
               </label>
             </div>
             <input
@@ -512,7 +549,7 @@ export default function AdminAttendancePage() {
               type="date"
               value={selectedDate}
               onChange={(e) => setSelectedDate(e.target.value)}
-              className="text-xs font-bold font-mono text-slate-800 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              className="text-xs font-extrabold font-mono text-emerald-950 bg-emerald-50/70 border border-emerald-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
             />
           </div>
 
@@ -571,16 +608,16 @@ export default function AdminAttendancePage() {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search employee..."
+              placeholder="Search employee in this date..."
               className="w-full pl-10 pr-4 py-2 text-sm bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-2xs"
             />
           </div>
 
-          {/* Content */}
+          {/* Main Content Area */}
           {loading ? (
             <div className="py-16 text-center text-slate-400">
               <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-emerald-600" />
-              <p className="text-xs">Loading employees...</p>
+              <p className="text-xs">Loading attendance for {selectedDate ? formatDisplayDate(selectedDate) : ''}...</p>
             </div>
           ) : employees.length === 0 ? (
             <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center space-y-3">
@@ -598,7 +635,7 @@ export default function AdminAttendancePage() {
             </div>
           ) : activeTab === 'entry' ? (
             /* ==============================================================
-               MODE 1: ENTRY CARDS
+               MODE 1: ENTRY CARDS FOR SELECTED DATE
                ============================================================== */
             <div className="space-y-4">
               {filteredEmployees.map((emp) => {
@@ -619,7 +656,6 @@ export default function AdminAttendancePage() {
                       draft.saved ? 'border-slate-200' : 'border-amber-300 ring-1 ring-amber-200'
                     }`}
                   >
-                    {/* Employee Name & Code */}
                     <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                       <div>
                         <h3 className="text-base font-extrabold text-slate-900 leading-tight">
@@ -642,7 +678,7 @@ export default function AdminAttendancePage() {
                       </div>
                     </div>
 
-                    {/* Status selection buttons */}
+                    {/* Status selection */}
                     <div className="pt-3">
                       <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block mb-1.5">
                         Status
@@ -667,7 +703,7 @@ export default function AdminAttendancePage() {
                       </div>
                     </div>
 
-                    {/* Check In Time: User types digits only, PM is fixed! */}
+                    {/* Check In Time */}
                     <div className="pt-3">
                       <div className="flex items-center justify-between mb-1">
                         <label
@@ -735,7 +771,7 @@ export default function AdminAttendancePage() {
             </div>
           ) : (
             /* ==============================================================
-               MODE 2: SHAREABLE ATTENDANCE SHEET
+               MODE 2: ATTENDANCE SHEET (WITH DIRECT INLINE EDITING)
                ============================================================== */
             <div className="space-y-4">
               {/* Share Toolbar */}
@@ -783,7 +819,7 @@ export default function AdminAttendancePage() {
                       className="inline-flex items-center gap-1 text-xs font-bold text-slate-900 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl transition-colors cursor-pointer print:hidden"
                     >
                       <Edit2 className="w-3 h-3" />
-                      Edit Timings
+                      Edit All Timings
                     </button>
                   </div>
 
@@ -805,8 +841,17 @@ export default function AdminAttendancePage() {
 
                 <div className="divide-y divide-slate-100">
                   {filteredEmployees.map((emp, index) => {
-                    const draft = drafts[emp.id];
-                    const checkInDisplay = draft?.check_in_time
+                    const draft = drafts[emp.id] || {
+                      student_id: emp.id,
+                      name: emp.name,
+                      student_code: emp.student_code,
+                      status: 'Present',
+                      check_in_time: '',
+                      notes: '',
+                      saved: false,
+                    };
+
+                    const checkInDisplay = draft.check_in_time
                       ? `${draft.check_in_time} PM`
                       : '--';
 
@@ -826,14 +871,22 @@ export default function AdminAttendancePage() {
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2">
                           <div className="text-right">
                             <span className="text-[10px] font-bold text-slate-400 uppercase block">Check In</span>
                             <span className="font-mono text-xs font-bold text-slate-700">
                               {checkInDisplay}
                             </span>
                           </div>
-                          <StatusBadge status={draft?.status || 'Present'} size="sm" />
+                          <StatusBadge status={draft.status || 'Present'} size="sm" />
+                          {/* Direct edit button right in the sheet! */}
+                          <button
+                            onClick={() => openDirectEdit(draft)}
+                            title="Edit this employee"
+                            className="p-1.5 text-slate-400 hover:text-slate-900 hover:bg-slate-100 rounded-lg cursor-pointer transition-colors print:hidden"
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </button>
                         </div>
                       </div>
                     );
@@ -860,12 +913,103 @@ export default function AdminAttendancePage() {
               ) : (
                 <>
                   <Save className="w-5 h-5" />
-                  <span>Save Attendance</span>
+                  <span>Save Attendance ({selectedDate ? formatDisplayDate(selectedDate) : 'Today'})</span>
                 </>
               )}
             </button>
           </div>
         </div>
+
+        {/* Quick Edit Modal (Opened directly from Sheet) */}
+        {editingRow && (
+          <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fadeIn">
+            <div className="bg-white w-full max-w-md rounded-t-3xl sm:rounded-2xl p-5 space-y-4 shadow-xl">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                <div>
+                  <h3 className="text-base font-black text-slate-900">
+                    Edit {editingRow.name}
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Date: {selectedDate ? formatFullDayDate(selectedDate) : ''}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setEditingRow(null)}
+                  className="p-1 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleSaveDirectEdit} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                    Status
+                  </label>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {statuses.map((s) => (
+                      <button
+                        key={s}
+                        type="button"
+                        onClick={() => setEditStatus(s)}
+                        className={`py-2 text-xs font-bold rounded-xl border text-center transition-all cursor-pointer ${
+                          editStatus === s
+                            ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                            : 'bg-white text-slate-700 border-slate-200'
+                        }`}
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label htmlFor="modal-edit-time" className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                    Check In Time (PM)
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="modal-edit-time"
+                      type="text"
+                      value={editTime}
+                      onChange={(e) => setEditTime(e.target.value)}
+                      placeholder="09:00"
+                      className="flex-1 px-3 py-2 text-sm font-mono font-bold bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                    <span className="px-3 py-2 bg-slate-100 text-slate-800 font-black text-xs rounded-xl border border-slate-200">
+                      PM
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingRow(null)}
+                    className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingEdit}
+                    className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs shadow-md shadow-emerald-200 flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    {savingEdit ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <>
+                        <Check className="w-4 h-4" />
+                        <span>Save Changes</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
 
         {/* Bottom Nav */}
         <div className="print:hidden">

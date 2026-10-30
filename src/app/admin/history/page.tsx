@@ -5,7 +5,7 @@ import { AdminGuard } from '@/components/AdminGuard';
 import { AdminHeader } from '@/components/AdminHeader';
 import { AdminBottomNav } from '@/components/AdminBottomNav';
 import { StatusBadge } from '@/components/StatusBadge';
-import { Student, AttendanceStatus, AttendanceRecord } from '@/types/attendance';
+import { Student, AttendanceStatus } from '@/types/attendance';
 import {
   getTodayDateString,
   formatFullDayDate,
@@ -20,10 +20,12 @@ import {
   Check,
   Loader2,
   AlertCircle,
-  FileText,
   ChevronRight,
   ArrowLeft,
   Share2,
+  Copy,
+  Printer,
+  Edit2,
 } from 'lucide-react';
 
 interface SheetSummary {
@@ -32,6 +34,7 @@ interface SheetSummary {
   present: number;
   absent: number;
   late: number;
+  leave: number;
 }
 
 export default function AdminHistoryPage() {
@@ -40,6 +43,8 @@ export default function AdminHistoryPage() {
   const [dateRecords, setDateRecords] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [copied, setCopied] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Edit Modal State
   const [editingRow, setEditingRow] = useState<any | null>(null);
@@ -48,25 +53,31 @@ export default function AdminHistoryPage() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
 
+  const showToast = (text: string) => {
+    setToastMessage(text);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
   // Load all recorded sheets (latest on top)
   const fetchAllSheets = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/attendance');
+      const res = await fetch(`/api/attendance?t=${Date.now()}`, { cache: 'no-store' });
       const data = await res.json();
       const records = data.records || [];
 
       // Group records by attendance_date
-      const map: Record<string, { present: number; absent: number; late: number; total: number }> = {};
+      const map: Record<string, { present: number; absent: number; late: number; leave: number; total: number }> = {};
       records.forEach((r: any) => {
         const d = r.attendance_date;
         if (!map[d]) {
-          map[d] = { present: 0, absent: 0, late: 0, total: 0 };
+          map[d] = { present: 0, absent: 0, late: 0, leave: 0, total: 0 };
         }
         map[d].total += 1;
         if (r.status === 'Present') map[d].present += 1;
         else if (r.status === 'Absent') map[d].absent += 1;
         else if (r.status === 'Late') map[d].late += 1;
+        else if (r.status === 'Leave') map[d].leave += 1;
       });
 
       // Sort dates with latest on top
@@ -77,6 +88,7 @@ export default function AdminHistoryPage() {
         present: map[date].present,
         absent: map[date].absent,
         late: map[date].late,
+        leave: map[date].leave,
       }));
 
       setSheets(summaryList);
@@ -97,8 +109,8 @@ export default function AdminHistoryPage() {
     setLoading(true);
     try {
       const [empRes, attRes] = await Promise.all([
-        fetch('/api/students'),
-        fetch(`/api/attendance?date=${date}`),
+        fetch(`/api/students?t=${Date.now()}`, { cache: 'no-store' }),
+        fetch(`/api/attendance?date=${date}&t=${Date.now()}`, { cache: 'no-store' }),
       ]);
       const empData = await empRes.json();
       const attData = await attRes.json();
@@ -164,13 +176,63 @@ export default function AdminHistoryPage() {
       const json = await res.json();
       if (!res.ok || !json.success) throw new Error(json.error || 'Failed to update');
 
+      // Update state locally
+      setDateRecords((prev) =>
+        prev.map((r) =>
+          r.student_id === editingRow.student_id
+            ? { ...r, status: editStatus, check_in: checkInFull || '' }
+            : r
+        )
+      );
+
       setEditingRow(null);
-      openSheetForDate(selectedDate);
+      showToast('Record updated successfully!');
+      fetchAllSheets();
     } catch (err: any) {
       setEditError(err.message || 'Could not update record');
     } finally {
       setSavingEdit(false);
     }
+  };
+
+  // Calculate current sheet statistics
+  const presentCount = dateRecords.filter((r) => r.status === 'Present').length;
+  const absentCount = dateRecords.filter((r) => r.status === 'Absent').length;
+  const lateCount = dateRecords.filter((r) => r.status === 'Late').length;
+  const leaveCount = dateRecords.filter((r) => r.status === 'Leave').length;
+
+  // Generate shareable report
+  const generateShareableReport = () => {
+    const fullDate = selectedDate ? formatFullDayDate(selectedDate) : 'Today';
+    let text = `📋 *EMPLOYEE ATTENDANCE SHEET*\n`;
+    text += `📅 Date: ${fullDate}\n`;
+    text += `👥 Total Employees: ${dateRecords.length}\n`;
+    text += `✅ Present: ${presentCount} | ❌ Absent: ${absentCount} | ⏳ Late: ${lateCount}\n\n`;
+    text += `─────────────────────\n`;
+
+    dateRecords.forEach((emp, idx) => {
+      const statusIcon =
+        emp.status === 'Present' ? '✅' : emp.status === 'Absent' ? '❌' : emp.status === 'Late' ? '⏳' : 'ℹ️';
+      const timeStr = emp.check_in ? `(${emp.check_in})` : '';
+      text += `${idx + 1}. ${emp.name} [${emp.student_code}] - ${statusIcon} ${emp.status || 'Present'} ${timeStr}\n`;
+    });
+
+    text += `─────────────────────\n`;
+    text += `Generated via Attendance Portal`;
+    return text;
+  };
+
+  const handleShareWhatsApp = () => {
+    const text = encodeURIComponent(generateShareableReport());
+    window.open(`https://api.whatsapp.com/send?text=${text}`, '_blank');
+  };
+
+  const handleCopyReport = () => {
+    const text = generateShareableReport();
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    showToast('Attendance Sheet copied to clipboard!');
+    setTimeout(() => setCopied(false), 2500);
   };
 
   // Filter sheets by date search
@@ -189,44 +251,56 @@ export default function AdminHistoryPage() {
 
   return (
     <AdminGuard>
-      <div className="min-h-screen bg-slate-50 flex flex-col max-w-md mx-auto w-full pb-24">
+      <div className="min-h-screen bg-slate-50 flex flex-col max-w-md mx-auto w-full pb-24 print:pb-0 print:bg-white print:max-w-none">
         {/* Header */}
-        <AdminHeader
-          title={selectedDate ? 'Sheet Details' : 'Attendance History'}
-          subtitle={selectedDate ? formatFullDayDate(selectedDate) : `${sheets.length} Sheets Saved`}
-          action={
-            selectedDate ? (
-              <button
-                onClick={() => {
-                  setSelectedDate(null);
-                  fetchAllSheets();
-                }}
-                className="text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded-xl cursor-pointer"
-              >
-                Back to Sheets
-              </button>
-            ) : null
-          }
-        />
+        <div className="print:hidden">
+          <AdminHeader
+            title={selectedDate ? 'Attendance Sheet' : 'Attendance History'}
+            subtitle={selectedDate ? formatFullDayDate(selectedDate) : `${sheets.length} Sheets Saved`}
+            action={
+              selectedDate ? (
+                <button
+                  onClick={() => {
+                    setSelectedDate(null);
+                    fetchAllSheets();
+                  }}
+                  className="text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded-xl cursor-pointer"
+                >
+                  All Sheets
+                </button>
+              ) : null
+            }
+          />
+        </div>
+
+        {/* Toast */}
+        {toastMessage && (
+          <div className="fixed top-16 left-1/2 transform -translate-x-1/2 z-50 w-11/12 max-w-md animate-bounce print:hidden">
+            <div className="p-3.5 rounded-2xl shadow-lg border bg-emerald-600 text-white border-emerald-500 flex items-center justify-center gap-2 text-sm font-bold">
+              <Check className="w-5 h-5 shrink-0" />
+              <span>{toastMessage}</span>
+            </div>
+          </div>
+        )}
 
         <main className="p-4 space-y-4">
-          {/* Search Box */}
-          <div className="relative">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={selectedDate ? 'Search employee in this sheet...' : 'Search sheets by date or day...'}
-              className="w-full pl-10 pr-4 py-2.5 text-sm bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-2xs"
-            />
-          </div>
-
           {!selectedDate ? (
             /* ==============================================================
                VIEW ALL SHEETS: LATEST ON TOP WITH ORGANIZED COUNTS
                ============================================================== */
-            <div className="space-y-3">
+            <div className="space-y-4">
+              {/* Search Box */}
+              <div className="relative">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search sheets by date or day..."
+                  className="w-full pl-10 pr-4 py-2.5 text-sm bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-2xs"
+                />
+              </div>
+
               <div className="flex items-center justify-between text-xs font-bold text-slate-400 uppercase tracking-wider px-1">
                 <span>All Saved Sheets (Latest First)</span>
                 <span>{filteredSheets.length} Total</span>
@@ -280,50 +354,152 @@ export default function AdminHistoryPage() {
             </div>
           ) : (
             /* ==============================================================
-               VIEW SINGLE SHEET DETAILS + EDIT OPTION
+               MATCHING EXACT ATTENDANCE SHEET DESIGN
                ============================================================== */
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
+            <div className="space-y-4">
+              {/* Back button & counter */}
+              <div className="flex items-center justify-between print:hidden">
                 <button
                   onClick={() => setSelectedDate(null)}
-                  className="inline-flex items-center text-xs font-bold text-slate-600 bg-white border border-slate-200 px-3 py-1.5 rounded-xl cursor-pointer shadow-2xs"
+                  className="inline-flex items-center text-xs font-bold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 px-3 py-1.5 rounded-xl cursor-pointer shadow-2xs transition-colors"
                 >
                   <ArrowLeft className="w-3.5 h-3.5 mr-1" />
                   All Sheets
                 </button>
-                <span className="text-xs text-slate-500 font-mono">
-                  {filteredRecords.length} Employees
+                <span className="text-xs text-slate-500 font-mono font-bold">
+                  {dateRecords.length} Employees
                 </span>
               </div>
 
-              <div className="bg-white border border-slate-200 rounded-2xl divide-y divide-slate-100 shadow-2xs overflow-hidden">
-                {filteredRecords.map((r, idx) => (
-                  <div key={r.student_id} className="p-3.5 flex items-center justify-between">
-                    <div>
-                      <div className="font-extrabold text-sm text-slate-900">
-                        {idx + 1}. {r.name}
-                      </div>
-                      <div className="text-xs text-slate-500 flex items-center gap-2 mt-0.5">
-                        <span className="font-mono text-emerald-700 font-bold">{r.student_code}</span>
-                        <span>&bull;</span>
-                        <span className="font-mono">
-                          {r.check_in ? r.check_in : 'No Time'}
-                        </span>
-                      </div>
-                    </div>
+              {/* Quick Stats Strip */}
+              <div className="grid grid-cols-4 gap-2 text-center print:hidden">
+                <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-2">
+                  <div className="text-sm font-black text-emerald-700">{presentCount}</div>
+                  <div className="text-[10px] font-bold text-emerald-800 uppercase">Present</div>
+                </div>
+                <div className="bg-rose-50 border border-rose-100 rounded-xl p-2">
+                  <div className="text-sm font-black text-rose-700">{absentCount}</div>
+                  <div className="text-[10px] font-bold text-rose-800 uppercase">Absent</div>
+                </div>
+                <div className="bg-amber-50 border border-amber-100 rounded-xl p-2">
+                  <div className="text-sm font-black text-amber-800">{lateCount}</div>
+                  <div className="text-[10px] font-bold text-amber-800 uppercase">Late</div>
+                </div>
+                <div className="bg-sky-50 border border-sky-100 rounded-xl p-2">
+                  <div className="text-sm font-black text-sky-700">{leaveCount}</div>
+                  <div className="text-[10px] font-bold text-sky-800 uppercase">Leave</div>
+                </div>
+              </div>
 
-                    <div className="flex items-center gap-2">
-                      <StatusBadge status={r.status} size="sm" />
-                      <button
-                        onClick={() => openEdit(r)}
-                        className="p-1.5 text-slate-400 hover:text-slate-900 hover:bg-slate-100 rounded-lg cursor-pointer transition-colors"
-                        title="Edit Timing"
-                      >
-                        <Edit3 className="w-4 h-4" />
-                      </button>
+              {/* Search Box */}
+              <div className="relative print:hidden">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search employee in this sheet..."
+                  className="w-full pl-10 pr-4 py-2 text-sm bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-2xs"
+                />
+              </div>
+
+              {/* Share Toolbar */}
+              <div className="bg-white border border-slate-200 rounded-2xl p-3 shadow-2xs flex items-center justify-between print:hidden">
+                <span className="text-xs font-bold text-slate-700">Share Sheet:</span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={handleShareWhatsApp}
+                    className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs cursor-pointer active:scale-95 transition-all"
+                  >
+                    <Share2 className="w-3.5 h-3.5" />
+                    WhatsApp
+                  </button>
+                  <button
+                    onClick={handleCopyReport}
+                    className="flex items-center gap-1 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl text-xs font-bold cursor-pointer active:scale-95 transition-all"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    {copied ? 'Copied!' : 'Copy'}
+                  </button>
+                  <button
+                    onClick={() => window.print()}
+                    className="p-2 text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-xl cursor-pointer"
+                    title="Print Sheet"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Sheet Card - Identical Dark Banner & Rows */}
+              <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden print:border-none print:shadow-none">
+                {/* Dark Banner */}
+                <div className="p-4 bg-slate-900 text-white">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] uppercase tracking-widest text-emerald-400 font-extrabold block">
+                        Employee Attendance Sheet
+                      </span>
+                      <h2 className="text-lg font-black mt-0.5">
+                        {selectedDate ? formatFullDayDate(selectedDate) : ''}
+                      </h2>
                     </div>
                   </div>
-                ))}
+
+                  {/* Summary Bar inside banner */}
+                  <div className="mt-3 pt-3 border-t border-slate-800 grid grid-cols-3 text-center text-xs">
+                    <div>
+                      <span className="text-slate-400 text-[10px] uppercase block">Total</span>
+                      <span className="font-extrabold text-white text-sm">{dateRecords.length}</span>
+                    </div>
+                    <div>
+                      <span className="text-emerald-400 text-[10px] uppercase block">Present</span>
+                      <span className="font-extrabold text-emerald-400 text-sm">{presentCount}</span>
+                    </div>
+                    <div>
+                      <span className="text-rose-400 text-[10px] uppercase block">Absent</span>
+                      <span className="font-extrabold text-rose-400 text-sm">{absentCount}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Rows with CHECK IN label and timing */}
+                <div className="divide-y divide-slate-100">
+                  {filteredRecords.map((r, index) => (
+                    <div key={r.student_id} className="p-3.5 flex items-center justify-between hover:bg-slate-50/70 transition-colors">
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs font-mono font-bold text-slate-400 w-5">
+                          {index + 1}.
+                        </span>
+                        <div>
+                          <div className="font-extrabold text-sm text-slate-900 leading-tight">
+                            {r.name}
+                          </div>
+                          <div className="font-mono text-xs font-semibold text-emerald-700">
+                            {r.student_code}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <div className="text-right">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase block">Check In</span>
+                          <span className="font-mono text-xs font-bold text-slate-700">
+                            {r.check_in ? r.check_in : '--'}
+                          </span>
+                        </div>
+                        <StatusBadge status={r.status || 'Present'} size="sm" />
+                        <button
+                          onClick={() => openEdit(r)}
+                          title="Edit this employee"
+                          className="p-1.5 text-slate-400 hover:text-slate-900 hover:bg-slate-100 rounded-lg cursor-pointer transition-colors print:hidden"
+                        >
+                          <Edit3 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           )}
@@ -336,10 +512,10 @@ export default function AdminHistoryPage() {
               <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                 <div>
                   <h3 className="text-base font-black text-slate-900">
-                    Edit Employee Timing
+                    Edit {editingRow.name}
                   </h3>
                   <p className="text-xs text-slate-500">
-                    {editingRow.name} &bull; {selectedDate ? formatDisplayDate(selectedDate) : ''}
+                    Date: {selectedDate ? formatFullDayDate(selectedDate) : ''}
                   </p>
                 </div>
                 <button
@@ -358,7 +534,6 @@ export default function AdminHistoryPage() {
               )}
 
               <form onSubmit={handleSaveEdit} className="space-y-4">
-                {/* Status Selection */}
                 <div>
                   <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
                     Status
@@ -381,14 +556,13 @@ export default function AdminHistoryPage() {
                   </div>
                 </div>
 
-                {/* Timing (User types digits only, PM fixed) */}
                 <div>
-                  <label htmlFor="edit-time-input" className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  <label htmlFor="edit-time-history" className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
                     Check In Time (PM)
                   </label>
                   <div className="flex items-center gap-2">
                     <input
-                      id="edit-time-input"
+                      id="edit-time-history"
                       type="text"
                       value={editTime}
                       onChange={(e) => setEditTime(e.target.value)}
@@ -419,7 +593,7 @@ export default function AdminHistoryPage() {
                     ) : (
                       <>
                         <Check className="w-4 h-4" />
-                        <span>Save Edit</span>
+                        <span>Save Changes</span>
                       </>
                     )}
                   </button>
@@ -430,7 +604,9 @@ export default function AdminHistoryPage() {
         )}
 
         {/* Bottom Nav */}
-        <AdminBottomNav />
+        <div className="print:hidden">
+          <AdminBottomNav />
+        </div>
       </div>
     </AdminGuard>
   );
