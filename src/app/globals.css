@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Touch friendly optimizations */
+button, input, select, textarea {
+  touch-action: manipulation;
+}
+
+/* Hide scrollbar for clean horizontal pill filters */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
